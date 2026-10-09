@@ -1,0 +1,746 @@
+import tkinter as tk
+from tkinter import messagebox
+from datetime import datetime
+import sqlite3
+import webbrowser
+import urllib.parse
+
+
+# =========================================================
+# DATABASE
+# =========================================================
+
+conn = sqlite3.connect("documents.db")
+cursor = conn.cursor()
+
+cursor.execute("""
+CREATE TABLE IF NOT EXISTS documents (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    number TEXT NOT NULL,
+    issue_date TEXT NOT NULL,
+    expiry_date TEXT NOT NULL
+)
+""")
+
+conn.commit()
+
+
+# =========================================================
+# GET STATUS
+# =========================================================
+
+def get_status(expiry):
+
+    expiry_date = datetime.strptime(
+        expiry, "%d-%m-%Y"
+    ).date()
+
+    today = datetime.today().date()
+
+    days_left = (expiry_date - today).days
+
+    if days_left < 0:
+        status = "EXPIRED"
+
+    elif days_left <= 30:
+        status = "EXPIRING SOON"
+
+    else:
+        status = "VALID"
+
+    return days_left, status
+
+
+# =========================================================
+# GET PRIORITY
+# =========================================================
+
+def get_priority(days_left):
+
+    if days_left < 0:
+        return "EXPIRED"
+
+    elif days_left <= 7:
+        return "HIGH"
+
+    elif days_left <= 30:
+        return "MEDIUM"
+
+    else:
+        return "LOW"
+
+
+# =========================================================
+# ADD DOCUMENT
+# =========================================================
+
+def add_document():
+
+    name = name_entry.get().strip()
+    number = number_entry.get().strip()
+    issue = issue_entry.get().strip()
+    expiry = expiry_entry.get().strip()
+
+    if not all([name, number, issue, expiry]):
+
+        messagebox.showwarning(
+            "Warning",
+            "Please fill all fields"
+        )
+
+        return
+
+    try:
+
+        issue_date = datetime.strptime(
+            issue, "%d-%m-%Y"
+        )
+
+        expiry_date = datetime.strptime(
+            expiry, "%d-%m-%Y"
+        )
+
+        if expiry_date < issue_date:
+
+            messagebox.showerror(
+                "Error",
+                "Expiry date cannot be before issue date"
+            )
+
+            return
+
+    except ValueError:
+
+        messagebox.showerror(
+            "Error",
+            "Date format must be DD-MM-YYYY"
+        )
+
+        return
+
+    cursor.execute("""
+        INSERT INTO documents
+        (name, number, issue_date, expiry_date)
+        VALUES (?, ?, ?, ?)
+    """, (
+        name,
+        number,
+        issue,
+        expiry
+    ))
+
+    conn.commit()
+
+    for entry in [
+        name_entry,
+        number_entry,
+        issue_entry,
+        expiry_entry
+    ]:
+
+        entry.delete(0, tk.END)
+
+    show_documents()
+
+    messagebox.showinfo(
+        "Success",
+        "Document added successfully!"
+    )
+
+
+# =========================================================
+# SHOW ALL DOCUMENTS
+# =========================================================
+
+def show_documents():
+
+    listbox.delete(0, tk.END)
+
+    documents = cursor.execute(
+        "SELECT * FROM documents"
+    ).fetchall()
+
+    for doc in documents:
+
+        days, status = get_status(doc[4])
+
+        priority = get_priority(days)
+
+        listbox.insert(
+            tk.END,
+            f"{doc[0]} | "
+            f"{doc[1]} | "
+            f"{doc[2]} | "
+            f"{doc[4]} | "
+            f"{days} days | "
+            f"{status} | "
+            f"{priority}"
+        )
+
+
+# =========================================================
+# DELETE DOCUMENT
+# =========================================================
+
+def delete_document():
+
+    selected = listbox.curselection()
+
+    if not selected:
+
+        messagebox.showwarning(
+            "Warning",
+            "Please select a document"
+        )
+
+        return
+
+    selected_data = listbox.get(
+        selected[0]
+    )
+
+    doc_id = selected_data.split("|")[0].strip()
+
+    confirm = messagebox.askyesno(
+        "Delete",
+        "Are you sure you want to delete this document?"
+    )
+
+    if confirm:
+
+        cursor.execute(
+            "DELETE FROM documents WHERE id=?",
+            (doc_id,)
+        )
+
+        conn.commit()
+
+        show_documents()
+
+        messagebox.showinfo(
+            "Deleted",
+            "Document deleted successfully!"
+        )
+
+
+# =========================================================
+# SEARCH DOCUMENT
+# =========================================================
+
+def search_document():
+
+    text = search_entry.get().strip()
+
+    listbox.delete(0, tk.END)
+
+    documents = cursor.execute(
+        """
+        SELECT * FROM documents
+        WHERE name LIKE ?
+        OR number LIKE ?
+        """,
+        (
+            f"%{text}%",
+            f"%{text}%"
+        )
+    ).fetchall()
+
+    for doc in documents:
+
+        days, status = get_status(doc[4])
+
+        priority = get_priority(days)
+
+        listbox.insert(
+            tk.END,
+            f"{doc[0]} | "
+            f"{doc[1]} | "
+            f"{doc[2]} | "
+            f"{doc[4]} | "
+            f"{days} days | "
+            f"{status} | "
+            f"{priority}"
+        )
+
+
+# =========================================================
+# AUTOMATIC REMINDER
+# =========================================================
+
+def automatic_reminder():
+
+    reminders = []
+
+    documents = cursor.execute(
+        """
+        SELECT name, expiry_date
+        FROM documents
+        """
+    ).fetchall()
+
+    for name, expiry in documents:
+
+        days, status = get_status(expiry)
+
+        priority = get_priority(days)
+
+        # EXPIRED
+        if days < 0:
+
+            reminders.append(
+                f"❌ {name} - EXPIRED "
+                f"{abs(days)} days ago"
+            )
+
+        # EXPIRES TODAY
+        elif days == 0:
+
+            reminders.append(
+                f"🚨 {name} - "
+                f"EXPIRES TODAY - HIGH PRIORITY"
+            )
+
+        # HIGH PRIORITY
+        elif days <= 7:
+
+            reminders.append(
+                f"🔴 {name} - "
+                f"{days} days left - "
+                f"HIGH PRIORITY"
+            )
+
+        # MEDIUM PRIORITY
+        elif days <= 30:
+
+            reminders.append(
+                f"🟠 {name} - "
+                f"{days} days left - "
+                f"MEDIUM PRIORITY"
+            )
+
+    if reminders:
+
+        messagebox.showwarning(
+            "🔔 Automatic Document Reminder",
+            "\n".join(reminders)
+        )
+
+
+# =========================================================
+# WHATSAPP REMINDER
+# =========================================================
+
+def send_whatsapp():
+
+    phone = phone_entry.get().strip()
+
+    if not phone:
+
+        messagebox.showwarning(
+            "Missing",
+            "Enter phone number\nExample: 9876543210"
+        )
+
+        return
+
+    # Add India country code
+    if not phone.startswith("91"):
+
+        phone = "91" + phone
+
+    reminders = []
+
+    documents = cursor.execute(
+        """
+        SELECT name, expiry_date
+        FROM documents
+        """
+    ).fetchall()
+
+    for name, expiry in documents:
+
+        days, status = get_status(expiry)
+
+        priority = get_priority(days)
+
+        if days < 0:
+
+            reminders.append(
+                f"🔴 {name} - "
+                f"EXPIRED {abs(days)} days ago"
+            )
+
+        elif days <= 7:
+
+            reminders.append(
+                f"🔴 {name} - "
+                f"{days} days left - "
+                f"HIGH PRIORITY"
+            )
+
+        elif days <= 30:
+
+            reminders.append(
+                f"🟠 {name} - "
+                f"{days} days left - "
+                f"MEDIUM PRIORITY"
+            )
+
+    if not reminders:
+
+        messagebox.showinfo(
+            "Good!",
+            "No expiring documents"
+        )
+
+        return
+
+    msg = (
+        "📄 Document Expiry Alert 📄\n\n"
+        + "\n".join(reminders)
+    )
+
+    url = (
+        f"https://wa.me/{phone}"
+        f"?text={urllib.parse.quote(msg)}"
+    )
+
+    webbrowser.open(url)
+
+    messagebox.showinfo(
+        "Done!",
+        "WhatsApp opened.\n"
+        "Press SEND to send the reminder."
+    )
+
+
+# =========================================================
+# MAIN WINDOW
+# =========================================================
+
+root = tk.Tk()
+
+root.title(
+    "Personal Document Expiry Tracker"
+)
+
+root.geometry(
+    "1100x750"
+)
+
+
+# =========================================================
+# TITLE
+# =========================================================
+
+tk.Label(
+    root,
+    text="📄 Personal Document Expiry Tracker",
+    font=("Arial", 20, "bold")
+).pack(pady=10)
+
+
+# =========================================================
+# PHONE NUMBER
+# =========================================================
+
+top = tk.LabelFrame(
+    root,
+    text="📱 WhatsApp Reminder",
+    padx=10,
+    pady=10
+)
+
+top.pack(
+    fill="x",
+    padx=15,
+    pady=5
+)
+
+tk.Label(
+    top,
+    text="Phone Number:"
+).grid(
+    row=0,
+    column=0,
+    padx=5
+)
+
+phone_entry = tk.Entry(
+    top,
+    width=25,
+    font=("Arial", 12)
+)
+
+phone_entry.grid(
+    row=0,
+    column=1,
+    padx=5
+)
+
+tk.Label(
+    top,
+    text="Example: 9876543210",
+    fg="green"
+).grid(
+    row=0,
+    column=2,
+    padx=10
+)
+
+
+# =========================================================
+# DOCUMENT INPUT
+# =========================================================
+
+frame = tk.Frame(root)
+
+frame.pack(pady=10)
+
+
+tk.Label(
+    frame,
+    text="Document Name"
+).grid(
+    row=0,
+    column=0,
+    padx=10,
+    pady=5
+)
+
+name_entry = tk.Entry(
+    frame,
+    width=30
+)
+
+name_entry.grid(
+    row=0,
+    column=1
+)
+
+
+tk.Label(
+    frame,
+    text="Document Number"
+).grid(
+    row=1,
+    column=0,
+    padx=10,
+    pady=5
+)
+
+number_entry = tk.Entry(
+    frame,
+    width=30
+)
+
+number_entry.grid(
+    row=1,
+    column=1
+)
+
+
+tk.Label(
+    frame,
+    text="Issue Date"
+).grid(
+    row=2,
+    column=0,
+    padx=10,
+    pady=5
+)
+
+issue_entry = tk.Entry(
+    frame,
+    width=30
+)
+
+issue_entry.grid(
+    row=2,
+    column=1
+)
+
+
+tk.Label(
+    frame,
+    text="Expiry Date"
+).grid(
+    row=3,
+    column=0,
+    padx=10,
+    pady=5
+)
+
+expiry_entry = tk.Entry(
+    frame,
+    width=30
+)
+
+expiry_entry.grid(
+    row=3,
+    column=1
+)
+
+
+# =========================================================
+# BUTTONS
+# =========================================================
+
+button_frame = tk.Frame(root)
+
+button_frame.pack(pady=10)
+
+
+tk.Button(
+    button_frame,
+    text="Add",
+    width=15,
+    command=add_document
+).grid(
+    row=0,
+    column=0,
+    padx=5
+)
+
+
+tk.Button(
+    button_frame,
+    text="Show All",
+    width=15,
+    command=show_documents
+).grid(
+    row=0,
+    column=1,
+    padx=5
+)
+
+
+tk.Button(
+    button_frame,
+    text="Delete",
+    width=15,
+    command=delete_document
+).grid(
+    row=0,
+    column=2,
+    padx=5
+)
+
+
+tk.Button(
+    button_frame,
+    text="🔔 Reminder",
+    width=18,
+    command=automatic_reminder
+).grid(
+    row=0,
+    column=3,
+    padx=5
+)
+
+
+tk.Button(
+    button_frame,
+    text="📲 WhatsApp",
+    width=18,
+    bg="#25D366",
+    fg="white",
+    command=send_whatsapp
+).grid(
+    row=0,
+    column=4,
+    padx=5
+)
+
+
+# =========================================================
+# SEARCH
+# =========================================================
+
+search_frame = tk.Frame(root)
+
+search_frame.pack(pady=5)
+
+
+tk.Label(
+    search_frame,
+    text="Search:"
+).grid(
+    row=0,
+    column=0
+)
+
+
+search_entry = tk.Entry(
+    search_frame,
+    width=30
+)
+
+search_entry.grid(
+    row=0,
+    column=1,
+    padx=5
+)
+
+
+tk.Button(
+    search_frame,
+    text="Search",
+    command=search_document
+).grid(
+    row=0,
+    column=2,
+    padx=5
+)
+
+
+tk.Button(
+    search_frame,
+    text="Clear",
+    command=show_documents
+).grid(
+    row=0,
+    column=3,
+    padx=5
+)
+
+
+# =========================================================
+# DOCUMENT LIST
+# =========================================================
+
+listbox = tk.Listbox(
+    root,
+    width=140,
+    height=18,
+    font=("Arial", 10)
+)
+
+listbox.pack(
+    pady=10
+)
+
+
+# =========================================================
+# START
+# =========================================================
+
+show_documents()
+
+# Automatically check reminders
+# 1000 milliseconds = 1 second
+root.after(
+    1000,
+    automatic_reminder
+)
+
+
+root.mainloop()
+
+
+# =========================================================
+# CLOSE DATABASE
+# =========================================================
+
+conn.close()
